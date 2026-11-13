@@ -191,6 +191,26 @@ export class Stage {
     }
   }
 
+  /** Brings the camera to the face (for the appearance editor) or back to the whole figure. */
+  focus(part: 'face' | 'full'): void {
+    if (part === 'full') return this.resetView();
+    const head = this.holder.getObjectByName(nodeName('Bip01 Head'));
+    if (!head) return;
+    this.holder.updateMatrixWorld(true);
+    const centre = head.getWorldPosition(new THREE.Vector3());
+    centre.y += 0.05;
+    const yaw = THREE.MathUtils.degToRad(Number(new URLSearchParams(location.search).get('yaw') ?? 12));
+    const distance = 0.55 / Math.min(1, this.camera.aspect);
+    this.controls.target.copy(centre);
+    this.camera.position.set(
+      centre.x + distance * Math.sin(yaw),
+      centre.y,
+      centre.z + distance * Math.cos(yaw),
+    );
+    this.controls.minDistance = 0.25;
+    this.controls.update();
+  }
+
   resetView(): void {
     this.framedFor = '';
     this.fit('reset');
@@ -301,6 +321,7 @@ export class Stage {
     });
     this.emitters = emitters;
     this.fit(carrier ? `carrier:${carrier.def.res}` : 'body');
+    if (new URLSearchParams(location.search).get('focus') === 'face') this.focus('face');
     return { missing };
   }
 
