@@ -346,40 +346,47 @@ export class Stage {
     if (key === this.framedFor) return;
     this.framedFor = key;
     this.holder.updateMatrixWorld(true);
-    const box = new THREE.Box3();
+    const points: THREE.Vector3[] = [];
+    const corners: THREE.Vector3[] = [];
     const point = new THREE.Vector3();
     // the frame follows the character and its carrier; a long weapon must not push the figure aside
     const visit = (node: THREE.Object3D): void => {
       if (node.userData.outOfFrame || !node.visible) return;
-      if ((node as THREE.Bone).isBone) {
-        // joints cover the posed figure where the skinned bounds fall short
-        node.getWorldPosition(point);
-        if (Number.isFinite(point.x + point.y + point.z)) box.expandByPoint(point);
-      }
       const mesh = node as THREE.Mesh;
-      if (mesh.isMesh) {
+      if ((node as THREE.Bone).isBone) {
+        node.getWorldPosition(point);
+        if (Number.isFinite(point.x + point.y + point.z)) points.push(point.clone());
+      } else if (mesh.isMesh) {
+        // a skinned mesh adds its posed bounds: a carrier with few joints is far larger than its skeleton
         const skinned = mesh as THREE.SkinnedMesh;
-        let local: THREE.Box3 | null;
         if (skinned.isSkinnedMesh) {
           skinned.skeleton.update();
           skinned.computeBoundingBox();
-          local = skinned.boundingBox;
-        } else {
-          if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-          local = mesh.geometry.boundingBox;
-        }
-        const world = local?.clone().applyMatrix4(mesh.matrixWorld);
-        if (
-          world &&
-          Number.isFinite(world.min.lengthSq() + world.max.lengthSq()) &&
-          world.getSize(point).length() < 60
-        )
-          box.union(world);
+        } else if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
+        const bounds = skinned.isSkinnedMesh ? skinned.boundingBox : mesh.geometry.boundingBox;
+        if (!bounds || bounds.isEmpty()) return node.children.forEach(visit);
+        const { min, max } = bounds;
+        for (const x of [min.x, max.x])
+          for (const y of [min.y, max.y])
+            for (const z of [min.z, max.z]) {
+              const corner = new THREE.Vector3(x, y, z).applyMatrix4(mesh.matrixWorld);
+              if (Number.isFinite(corner.x + corner.y + corner.z) && corner.length() < 60)
+                corners.push(corner);
+            }
       }
       node.children.forEach(visit);
     };
     visit(this.holder);
-    box.expandByScalar(0.1);
+    if (!points.length && !corners.length) return;
+    if (!points.length) points.push(...corners);
+    // helper joints parked far from the figure must not stretch the frame
+    const middle = points.reduce((sum, p) => sum.add(p), new THREE.Vector3()).divideScalar(points.length);
+    const spread = points.map((p) => p.distanceTo(middle)).sort((a, b) => a - b);
+    const limit = Math.max(spread[Math.floor(spread.length * 0.5)] * 3.2, 0.5);
+    const box = new THREE.Box3();
+    for (const p of points) if (p.distanceTo(middle) <= limit) box.expandByPoint(p);
+    for (const corner of corners) box.expandByPoint(corner);
+    box.expandByScalar(0.16);
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
     this.problems.push(`box ${size.x.toFixed(2)},${size.y.toFixed(2)},${size.z.toFixed(2)}`);
