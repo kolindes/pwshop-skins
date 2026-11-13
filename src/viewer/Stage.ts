@@ -64,6 +64,26 @@ function resetRoot(scene: THREE.Object3D): void {
 
 const HAIR_TINT = new THREE.Color(0x3a2a22);
 
+/** Crystal parts mirror their surroundings far more than the neutral studio light gives them. */
+function polishCrystals(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      const standard = material as THREE.MeshStandardMaterial;
+      if (!standard.userData?.crystal) continue;
+      standard.envMapIntensity = 2;
+      standard.metalness = 0.2;
+      // the game lights crystals with a bright sky reflection: let them glow with their own colour instead
+      standard.emissive.set(0xffffff);
+      standard.emissiveMap = standard.map;
+      standard.emissiveIntensity = 0.5;
+      standard.depthWrite = false;
+      standard.needsUpdate = true;
+    }
+  });
+}
+
 /** Hair textures are grey strands the game dyes in the shader; give them a natural default colour. */
 function tintHair(root: THREE.Object3D): void {
   root.traverse((node) => {
@@ -398,6 +418,7 @@ export class Stage {
       hideInactive(scene);
       dropVertexColors(scene);
       tintHair(scene);
+      polishCrystals(scene);
       scene.userData.emitters = attachEffects(scene, gltf, this.effects);
       return { scene, animations: gltf.animations };
     } catch (error) {
