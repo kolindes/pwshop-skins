@@ -339,10 +339,11 @@ export class Stage {
     const width = Math.max(size.x, size.z * 0.7);
     const distance = Math.max(size.y / 2 / tan, width / 2 / (tan * this.camera.aspect)) * 1.12 + size.z / 2;
     this.controls.target.copy(centre);
+    const yaw = THREE.MathUtils.degToRad(Number(new URLSearchParams(location.search).get('yaw') ?? 20));
     this.camera.position.set(
-      centre.x + distance * 0.35,
+      centre.x + distance * Math.sin(yaw),
       centre.y + size.y * 0.08,
-      centre.z + distance * 0.94,
+      centre.z + distance * Math.cos(yaw),
     );
     this.controls.maxDistance = distance * 4;
     this.controls.update();
