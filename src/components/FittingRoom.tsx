@@ -144,7 +144,13 @@ export function FittingRoom({
       </div>
       <div className="room__stage">
         <canvas ref={canvasRef} />
-        {busy && <div className="room__busy">Загрузка модели…</div>}
+        {busy && (
+          <div className="room__busy">
+            Загрузка модели…
+            {location.search.includes('debug=1') ? ` ${stageRef.current?.problems.join(' > ') ?? ''}` : ''}
+          </div>
+        )}
+        {note && !busy && <div className="room__alert">{note}</div>}
         <button
           type="button"
           className="room__reset"
@@ -154,7 +160,6 @@ export function FittingRoom({
           ⟲
         </button>
       </div>
-      {note && <p className="room__note">{note}</p>}
       <div className="room__worn">
         <div className="room__worn-head">
           <span>Надето</span>

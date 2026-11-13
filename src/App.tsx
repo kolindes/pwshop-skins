@@ -163,6 +163,7 @@ export function App() {
                   item={item}
                   worn={look[item.part] === item.id}
                   wearable={wearable(item)}
+                  has3d={Boolean(modelFor(catalog, item, persona)?.file)}
                   currencyIcon={currencyIcon}
                   onOpen={setOpened}
                   onTry={tryOn}

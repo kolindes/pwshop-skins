@@ -1,3 +1,16 @@
+/* the fonts of the game client, served with the other extracted assets */
+@font-face {
+  font-family: 'PW Game';
+  src: url('/data/fonts/Roboto.ttf') format('truetype');
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'PW Digits';
+  src: url('/data/fonts/BarlowCondensed-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+
 :root {
   --bg: #121214;
   --surface: #1b1b1f;
@@ -12,7 +25,7 @@
   --bad: #8d8d99;
   --radius: 14px;
   --top: 64px;
-  --room: clamp(340px, 26vw, 460px);
+  --room: clamp(420px, 36vw, 760px);
   color-scheme: dark;
   font-family:
     'PW Game',
@@ -300,7 +313,8 @@ button:disabled {
 /* grid */
 .grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  /* cells sized for the icons at their in-game size */
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
   gap: 14px;
 }
 
@@ -423,6 +437,12 @@ button:disabled {
   align-items: center;
   gap: 5px;
   flex-wrap: wrap;
+}
+
+.price b {
+  font-family: 'PW Digits', 'PW Game', sans-serif;
+  font-size: 16px;
+  letter-spacing: 0.02em;
 }
 
 .price img {
@@ -786,24 +806,6 @@ button:disabled {
 }
 
 /* responsive */
-@media (max-width: 1500px) {
-  .grid {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1300px) {
-  .grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 1100px) {
-  .grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 900px) {
   :root {
     --top: 56px;
@@ -827,8 +829,8 @@ button:disabled {
   }
 
   .grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+    gap: 8px;
   }
 
   .catalog {
@@ -876,4 +878,69 @@ button:disabled {
   * {
     transition: none !important;
   }
+}
+
+/* compact cards */
+.grid {
+  gap: 10px;
+}
+
+.card__media img {
+  width: 88px;
+  height: 88px;
+  max-width: 72%;
+  max-height: 72%;
+}
+
+.card__body {
+  gap: 4px;
+  padding: 8px;
+}
+
+.card__name {
+  font-size: 12.5px;
+  line-height: 1.25;
+  min-height: 2.5em;
+}
+
+.card .badge {
+  left: 6px;
+  bottom: 6px;
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+.card__rarity {
+  top: 6px;
+  right: 6px;
+  font-size: 11px;
+  padding: 1px 6px;
+}
+
+.card .btn--small {
+  height: 28px;
+  font-size: 12px;
+}
+
+.card__no3d {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.room__alert {
+  position: absolute;
+  left: 12px;
+  right: 60px;
+  top: 12px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: rgba(20, 20, 24, 0.82);
+  color: var(--warn);
+  font-size: 13px;
 }

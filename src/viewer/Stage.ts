@@ -25,12 +25,7 @@ const lastSegment = (path: string): string => path.split('/').filter(Boolean).po
 
 /** Unity local position / euler angles (degrees, ZXY order) to the mirrored right-handed space of the exported models. */
 function applyUnityOffset(object: THREE.Object3D, def: ModelDef): void {
-  // the game replaces the transform the prefab root was saved with
-  const root = object.children[0];
-  if (root) {
-    root.position.set(0, 0, 0);
-    root.quaternion.identity();
-  }
+  resetRoot(object);
   const [px, py, pz] = def.pos ?? [0, 0, 0];
   const [rx, ry, rz] = def.rot ?? [0, 0, 0];
   const rad = THREE.MathUtils.degToRad;
@@ -39,6 +34,48 @@ function applyUnityOffset(object: THREE.Object3D, def: ModelDef): void {
   object.quaternion.set(q.x, -q.y, -q.z, q.w);
   const scale = typeof def.scale === 'number' && def.scale > 0 ? def.scale : 1;
   object.scale.setScalar(scale);
+}
+
+/** The game places a prefab itself: the transform its root was saved with does not apply. */
+function resetRoot(scene: THREE.Object3D): void {
+  const root = scene.children[0];
+  if (!root) return;
+  root.position.set(0, 0, 0);
+  root.quaternion.identity();
+}
+
+const HAIR_TINT = new THREE.Color(0x3a2a22);
+
+/** Hair textures are grey strands the game dyes in the shader; give them a natural default colour. */
+function tintHair(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      const standard = material as THREE.MeshStandardMaterial;
+      if (!String(standard.userData?.shader ?? '').includes('Hair')) continue;
+      standard.color.copy(HAIR_TINT);
+      standard.metalness = 0;
+      standard.roughness = 0.55;
+      standard.metalnessMap = null;
+      standard.roughnessMap = null;
+      standard.needsUpdate = true;
+    }
+  });
+}
+
+/** Vertex colours of the game models are shader masks; rendering them as a tint washes the surface out. */
+function dropVertexColors(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    if (mesh.geometry.hasAttribute('color')) mesh.geometry.deleteAttribute('color');
+    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+      if (!material.vertexColors) continue;
+      material.vertexColors = false;
+      material.needsUpdate = true;
+    }
+  });
 }
 
 function hideInactive(root: THREE.Object3D): void {
@@ -117,13 +154,15 @@ export class Stage {
   /** Builds the composition; resolves with the slots whose model file is not available. */
   async show(outfit: Outfit): Promise<StageReport> {
     const generation = ++this.generation;
+    const step = (name: string) => this.problems.push(name) && console.debug(name);
     this.problems.length = 0;
     const missing: Part[] = [];
     const group = new THREE.Group();
     const mixers: THREE.AnimationMixer[] = [];
 
-    const body = await this.instance(outfit.outfit ?? outfit.body);
-    if (!body) throw new Error('Модель персонажа недоступна');
+    const body = (await this.instance(outfit.outfit)) ?? (await this.instance(outfit.body));
+    if (!body) throw new Error('Модель персонажа ещё не выгружена');
+    resetRoot(body.scene);
     if (outfit.outfit && !outfit.outfit.file) missing.push('outfit');
     const bodyDef = outfit.outfit?.file ? outfit.outfit : outfit.body;
     const bone = (name: string) => body.scene.getObjectByName(nodeName(name));
@@ -146,6 +185,7 @@ export class Stage {
 
     for (const piece of [face, hair])
       if (piece) this.skinOnto(piece.scene, body.scene, bone('Bip01 Head') ?? body.scene);
+    step('pieces loaded');
     if (head) this.skinOnto(head.scene, body.scene, bone('Bip01 Head') ?? body.scene);
     if (weapon) {
       const hand = bone(lastSegment(String(weapon.def.bind || '')) || this.catalog.points.weapon);
@@ -166,6 +206,7 @@ export class Stage {
       this.play(piece, 'Stand', mixers);
     }
 
+    step('attached');
     const carrier = flight ?? mount;
     let riderClip = 'Stand';
     if (carrier) {
@@ -200,6 +241,7 @@ export class Stage {
       mixers.push(mixer);
     }
 
+    step('clip ready');
     this.holder.clear();
     this.holder.add(group);
     this.mixers = mixers;
@@ -215,6 +257,8 @@ export class Stage {
       const gltf = await this.load(`${DATA_URL}/models/${encodeURIComponent(def.file)}`);
       const scene = SkeletonUtils.clone(gltf.scene);
       hideInactive(scene);
+      dropVertexColors(scene);
+      tintHair(scene);
       return { scene, animations: gltf.animations };
     } catch (error) {
       console.warn('model failed', def.file, error);
@@ -307,6 +351,11 @@ export class Stage {
     // the frame follows the character and its carrier; a long weapon must not push the figure aside
     const visit = (node: THREE.Object3D): void => {
       if (node.userData.outOfFrame || !node.visible) return;
+      if ((node as THREE.Bone).isBone) {
+        // joints cover the posed figure where the skinned bounds fall short
+        node.getWorldPosition(point);
+        if (Number.isFinite(point.x + point.y + point.z)) box.expandByPoint(point);
+      }
       const mesh = node as THREE.Mesh;
       if (mesh.isMesh) {
         const skinned = mesh as THREE.SkinnedMesh;
@@ -330,7 +379,7 @@ export class Stage {
       node.children.forEach(visit);
     };
     visit(this.holder);
-    box.expandByScalar(0.05);
+    box.expandByScalar(0.1);
     if (box.isEmpty()) return;
     const size = box.getSize(new THREE.Vector3());
     this.problems.push(`box ${size.x.toFixed(2)},${size.y.toFixed(2)},${size.z.toFixed(2)}`);
