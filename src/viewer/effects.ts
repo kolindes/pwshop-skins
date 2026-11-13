@@ -83,29 +83,31 @@ const VERTEX = /* glsl */ `
   attribute vec4 iColor;
   uniform int uMode;
   uniform vec2 uStretch;
+  uniform float uScale;
   varying vec4 vColor;
   varying vec2 vUv;
   varying float vFrame;
   void main() {
     float c = cos(iAngle);
     float s = sin(iAngle);
-    vec2 corner = vec2(c * position.x - s * position.y, s * position.x + c * position.y) * iSize;
+    float size = iSize * uScale;
+    vec2 corner = vec2(c * position.x - s * position.y, s * position.x + c * position.y) * size;
     vec4 centre = modelViewMatrix * vec4(iPosition, 1.0);
     vec4 mv;
     if (uMode == 2) {
       // lying flat: a ring or a puddle on the ground
-      mv = modelViewMatrix * vec4(iPosition + vec3(corner.x, 0.0, corner.y), 1.0);
+      mv = modelViewMatrix * vec4(iPosition + vec3(corner.x, 0.0, corner.y) / uScale, 1.0);
     } else if (uMode == 3) {
       // upright: turns to the camera around the vertical axis only
-      mv = modelViewMatrix * vec4(iPosition + vec3(0.0, corner.y, 0.0), 1.0) + vec4(corner.x, 0.0, 0.0, 0.0);
+      mv = modelViewMatrix * vec4(iPosition + vec3(0.0, corner.y, 0.0) / uScale, 1.0) + vec4(corner.x, 0.0, 0.0, 0.0);
     } else if (uMode == 1) {
       // a streak along its direction of travel
       vec3 travel = (modelViewMatrix * vec4(iVelocity, 0.0)).xyz;
       float speed = length(travel);
       vec2 along = speed > 1e-5 ? travel.xy / max(length(travel.xy), 1e-5) : vec2(0.0, 1.0);
       vec2 across = vec2(-along.y, along.x);
-      float reach = iSize * max(uStretch.x, 1.0) + speed * uStretch.y;
-      mv = centre + vec4(along * position.y * reach + across * position.x * iSize, 0.0, 0.0);
+      float reach = size * max(uStretch.x, 1.0) + speed * uStretch.y;
+      mv = centre + vec4(along * position.y * reach + across * position.x * size, 0.0, 0.0);
     } else {
       mv = centre + vec4(corner, 0.0, 0.0);
     }
@@ -208,6 +210,7 @@ export class Emitter implements Animated {
         uAdditive: { value: additive ? 1 : 0 },
         uMode: { value: spec.mode ?? 0 },
         uStretch: { value: new THREE.Vector2(spec.stretch?.[0] ?? 2, spec.stretch?.[1] ?? 0) },
+        uScale: { value: 1 },
       },
       transparent: true,
       depthWrite: false,
@@ -264,6 +267,10 @@ export class Emitter implements Animated {
 
   update(delta: number): void {
     const { spec } = this;
+    // particle sizes follow the scale of the node that carries the system, as in the game
+    const world = this.mesh.matrixWorld.elements;
+    const scale = Math.hypot(world[0], world[1], world[2]);
+    this.material.uniforms.uScale.value = scale > 1e-6 ? scale : 1;
     this.clock += delta;
     this.debt += spec.rate * delta;
     if (!this.burstDone && spec.bursts.length) {
