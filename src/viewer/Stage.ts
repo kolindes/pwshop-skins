@@ -4,7 +4,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { DATA_URL } from '../catalog';
-import { attachEffects, loadEffectTextures, type Emitter } from './effects';
+import { attachEffects, loadEffectTextures, type Animated } from './effects';
 import type { Catalog, ModelDef, Part } from '../types';
 
 /** Resolved models of one composition; a missing key means the slot is empty. */
@@ -101,7 +101,7 @@ export class Stage {
   private readonly clock = new THREE.Clock();
   private readonly holder = new THREE.Group();
   private mixers: THREE.AnimationMixer[] = [];
-  private emitters: Emitter[] = [];
+  private emitters: Animated[] = [];
   private rider: Rider | null = null;
   /** particle and glow effects; off for visitors who ask for reduced motion */
   private readonly effects = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -315,9 +315,9 @@ export class Stage {
     this.rider = rider;
     this.alignRider();
     for (const emitter of this.emitters) emitter.dispose();
-    const emitters: Emitter[] = [];
+    const emitters: Animated[] = [];
     group.traverse((node) => {
-      if (node.userData.emitters) emitters.push(...(node.userData.emitters as Emitter[]));
+      if (node.userData.emitters) emitters.push(...(node.userData.emitters as Animated[]));
     });
     this.emitters = emitters;
     this.fit(carrier ? `carrier:${carrier.def.res}` : 'body');

@@ -30,6 +30,55 @@ interface EffectMaterial {
   blend?: 'add' | 'alpha';
   tint?: [number, number, number, number];
   uv?: [number, number, number, number];
+  /** texture index whose brightness limits the opacity */
+  mask?: number;
+  /** UV speed of the main texture, units per second */
+  scroll?: [number, number];
+  /** a shell that glows only along its silhouette */
+  rim?: { color: number[]; inner: number[]; power: number; gain: number };
+}
+
+/** Anything the stage advances every frame and frees with the composition. */
+export interface Animated {
+  update(delta: number, pixels: number): void;
+  dispose(): void;
+}
+
+/** Moves a texture across its surface, as the flowing effect shader of the game does. */
+class Scroller implements Animated {
+  constructor(
+    private readonly map: THREE.Texture,
+    private readonly speed: [number, number],
+  ) {}
+
+  update(delta: number): void {
+    this.map.offset.x = (this.map.offset.x + this.speed[0] * delta) % 1;
+    this.map.offset.y = (this.map.offset.y + this.speed[1] * delta) % 1;
+  }
+
+  dispose(): void {
+    this.map.dispose();
+  }
+}
+
+let rimTexture: THREE.Texture | null = null;
+
+/** Matcap that is dark in the middle and bright at the edge: the look of a rim-light shell. */
+function rimMatcap(): THREE.Texture {
+  if (rimTexture) return rimTexture;
+  const size = 128;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const r = Math.min(1, Math.hypot(x - size / 2, y - size / 2) / (size / 2));
+      const v = Math.round(255 * Math.pow(r, 3));
+      data.set([v, v, v, 255], (y * size + x) * 4);
+    }
+  }
+  rimTexture = new THREE.DataTexture(data, size, size);
+  rimTexture.colorSpace = THREE.SRGBColorSpace;
+  rimTexture.needsUpdate = true;
+  return rimTexture;
 }
 
 const MAX_PARTICLES_PER_SYSTEM = 160;
@@ -93,7 +142,7 @@ const FRAGMENT = /* glsl */ `
 `;
 
 /** Replays one exported particle system as camera-facing sprites in the space of its node. */
-export class Emitter {
+export class Emitter implements Animated {
   readonly points: THREE.Points;
   private readonly count: number;
   private readonly position: Float32Array;
@@ -251,6 +300,11 @@ export async function loadEffectTextures(gltf: GLTF): Promise<void> {
   const wanted = new Set(
     nodes.flatMap((node) => (node.extras?.particles ? [node.extras.particles.texture] : [])),
   );
+  const materials = (gltf.parser.json.materials ?? []) as { extras?: { effect?: EffectMaterial } }[];
+  for (const material of materials) {
+    const mask = material.extras?.effect?.mask;
+    if (typeof mask === 'number') wanted.add(mask);
+  }
   const textures: Record<number, THREE.Texture> = {};
   await Promise.all(
     [...wanted].map(async (index) => {
@@ -265,9 +319,9 @@ export async function loadEffectTextures(gltf: GLTF): Promise<void> {
 }
 
 /** Turns exported effect materials into unlit blended ones and starts the particle systems of a model instance. */
-export function attachEffects(root: THREE.Object3D, gltf: GLTF, enabled: boolean): Emitter[] {
+export function attachEffects(root: THREE.Object3D, gltf: GLTF, enabled: boolean): Animated[] {
   const textures = (gltf.userData.effectTextures ?? {}) as Record<number, THREE.Texture>;
-  const emitters: Emitter[] = [];
+  const emitters: Animated[] = [];
   const hosts: THREE.Object3D[] = [];
   root.traverse((node) => {
     if (node.userData.particles) hosts.push(node);
@@ -281,6 +335,19 @@ export function attachEffects(root: THREE.Object3D, gltf: GLTF, enabled: boolean
         mesh.visible = false;
         return material;
       }
+      mesh.userData.outOfFrame = true;
+      mesh.renderOrder = 9;
+      if (effect.rim) {
+        const [r, g, b] = effect.rim.color;
+        return new THREE.MeshMatcapMaterial({
+          matcap: rimMatcap(),
+          color: new THREE.Color(Math.min(r, 1.5), Math.min(g, 1.5), Math.min(b, 1.5)),
+          transparent: true,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+          side: THREE.FrontSide,
+        });
+      }
       const source = material as THREE.MeshStandardMaterial;
       const tint = effect.tint ?? [1, 1, 1, 1];
       const additive = effect.blend === 'add';
@@ -290,11 +357,17 @@ export function attachEffects(root: THREE.Object3D, gltf: GLTF, enabled: boolean
         map.repeat.set(effect.uv[0], effect.uv[1]);
         map.offset.set(effect.uv[2], effect.uv[3]);
       }
-      mesh.userData.outOfFrame = true;
-      mesh.renderOrder = 9;
+      if (map && effect.scroll) {
+        map.wrapS = map.wrapT = THREE.RepeatWrapping;
+        emitters.push(new Scroller(map, effect.scroll));
+      }
+      // HDR tints keep their hue; brightness beyond the display range is cut
+      const peak = Math.max(tint[0], tint[1], tint[2], 1e-3);
+      const gain = Math.min(peak, 2.5) / peak;
       return new THREE.MeshBasicMaterial({
         map,
-        color: new THREE.Color(Math.min(tint[0], 2), Math.min(tint[1], 2), Math.min(tint[2], 2)),
+        alphaMap: typeof effect.mask === 'number' ? (textures[effect.mask] ?? null) : null,
+        color: new THREE.Color(tint[0] * gain, tint[1] * gain, tint[2] * gain),
         opacity: Math.min(tint[3], 1),
         transparent: true,
         depthWrite: false,
