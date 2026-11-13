@@ -4,7 +4,9 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { DATA_URL } from '../catalog';
+import { isUntouched, type Appearance, type EditorData, type HeadInfo } from '../appearance';
 import { attachEffects, loadEffectTextures, type Animated } from './effects';
+import { applySliders, composeEye, composeFace, hairColour } from './face';
 import type { Catalog, ModelDef, Part } from '../types';
 
 /** Resolved models of one composition; a missing key means the slot is empty. */
@@ -14,7 +16,16 @@ export type Outfit = Partial<Record<Part, ModelDef>> & {
   beast: boolean;
   /** head and default hair files of the persona; absent when the body has its own head */
   face?: { head: string; hair: string };
+  /** a hair model chosen in the appearance editor instead of the default one */
+  hairFile?: string;
 };
+
+/** The visitor's appearance choices with the editor data they refer to. */
+export interface AppearanceInput {
+  data: EditorData;
+  head: HeadInfo;
+  look: Appearance;
+}
 
 interface Rider {
   body: THREE.Object3D;
@@ -103,6 +114,8 @@ export class Stage {
   private mixers: THREE.AnimationMixer[] = [];
   private emitters: Animated[] = [];
   private rider: Rider | null = null;
+  private liveBody: THREE.Object3D | null = null;
+  private appearanceRun = 0;
   /** particle and glow effects; off for visitors who ask for reduced motion */
   private readonly effects = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   private generation = 0;
@@ -191,6 +204,55 @@ export class Stage {
     }
   }
 
+  /**
+   * Applies the appearance editor state to the character on stage: face make-up, iris, hair colour and the
+   * face and body sliders. Hair style is part of the composition and is passed to show().
+   */
+  async applyAppearance(input: AppearanceInput | null): Promise<void> {
+    const body = this.liveBody;
+    if (!body || !input) return;
+    const run = ++this.appearanceRun;
+    const { data, head, look } = input;
+    const untouched = isUntouched(look);
+    const face = untouched ? null : await composeFace(data, head, look);
+    if (run !== this.appearanceRun || body !== this.liveBody) return;
+    const tint = hairColour(data, look) ?? HAIR_TINT;
+    const eyes: THREE.MeshStandardMaterial[] = [];
+    body.traverse((node) => {
+      const mesh = node as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const list = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const next = list.map((material) => {
+        const standard = material as THREE.MeshStandardMaterial;
+        const shader = String(standard.userData?.shader ?? '');
+        const isFace = standard.name.startsWith('Tou_');
+        const isEye = shader.includes('Role_Eye');
+        const isHair = shader.includes('Hair');
+        if (!isFace && !isEye && !isHair) return material;
+        // materials are shared with the cached model: edit a private copy
+        const own = standard.userData.own ? standard : standard.clone();
+        if (!standard.userData.own) {
+          own.userData = { ...standard.userData, own: true, originalMap: standard.map };
+        }
+        if (isFace) own.map = face ?? (own.userData.originalMap as THREE.Texture | null);
+        if (isHair) own.color.copy(tint);
+        if (isEye) eyes.push(own);
+        own.needsUpdate = true;
+        return own;
+      });
+      mesh.material = Array.isArray(mesh.material) ? next : next[0];
+    });
+    for (const material of eyes) {
+      const original = material.userData.originalMap as THREE.Texture | null;
+      if (!original) continue;
+      const map = untouched ? null : await composeEye(data, head, look, original);
+      if (run !== this.appearanceRun) return;
+      material.map = map ?? original;
+      material.needsUpdate = true;
+    }
+    applySliders(body, head, data.sliders, look);
+  }
+
   /** Brings the camera to the face (for the appearance editor) or back to the whole figure. */
   focus(part: 'face' | 'full'): void {
     if (part === 'full') return this.resetView();
@@ -244,7 +306,7 @@ export class Stage {
     );
     const file = (name: string) => this.instance({ res: name, file: name });
     const [face, hair] = outfit.face
-      ? await Promise.all([file(outfit.face.head), head ? null : file(outfit.face.hair)])
+      ? await Promise.all([file(outfit.face.head), head ? null : file(outfit.hairFile ?? outfit.face.hair)])
       : [null, null];
     if (generation !== this.generation) return { missing };
 
@@ -313,6 +375,7 @@ export class Stage {
     this.holder.add(group);
     this.mixers = mixers;
     this.rider = rider;
+    this.liveBody = body.scene;
     this.alignRider();
     for (const emitter of this.emitters) emitter.dispose();
     const emitters: Animated[] = [];
@@ -404,12 +467,26 @@ export class Stage {
       if ((node as THREE.SkinnedMesh).isSkinnedMesh) meshes.push(node as THREE.SkinnedMesh);
       else if ((node as THREE.Mesh).isMesh) rigid.push(node as THREE.Mesh);
     });
-    const adopt = (own: THREE.Bone): THREE.Object3D => {
-      const match = body.getObjectByName(own.name);
-      if (match) return match;
-      const parent =
-        own.parent && (own.parent as THREE.Bone).isBone ? adopt(own.parent as THREE.Bone) : fallback;
-      if (own.parent !== parent) parent.add(own);
+    // Only the shared biped skeleton is matched by name. Strand, cloth and face bones are the piece's own:
+    // names like Bone01 repeat between a hair model and a skirt and must not be mixed up.
+    const adopted = new Map<THREE.Object3D, THREE.Object3D>();
+    const adopt = (own: THREE.Object3D): THREE.Object3D => {
+      const known = adopted.get(own);
+      if (known) return known;
+      const match = own.name.startsWith('Bip0') ? body.getObjectByName(own.name) : undefined;
+      if (match) {
+        adopted.set(own, match);
+        return match;
+      }
+      adopted.set(own, own);
+      const parent = own.parent;
+      if (!parent || parent === piece) {
+        // a node at the top of the piece sits where the piece does: on the body root
+        if (own !== piece) body.add(own);
+        return own;
+      }
+      const home = adopt(parent);
+      if (home !== parent) home.add(own);
       return own;
     };
     for (const mesh of meshes) {

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { headFor, type Appearance, type EditorData } from '../appearance';
 import { PART_LABEL, PART_ORDER, displayName, iconUrl, slotOf } from '../catalog';
 import type { Catalog, Item, Look, ModelDef, Part, Persona } from '../types';
 import { Stage, type Outfit } from '../viewer/Stage';
+import { Editor } from './Editor';
 import { ViewControls } from './ViewControls';
 
 interface Props {
@@ -13,6 +15,10 @@ interface Props {
   onRemove: (part: Part) => void;
   onClear: () => void;
   onOpen: (item: Item) => void;
+  /** data of the appearance editor; null until it has loaded */
+  editor: EditorData | null;
+  appearance: Appearance;
+  onAppearance: (appearance: Appearance) => void;
 }
 
 /** The model an item uses on the persona; rigid parts fall back to any class when the persona has none. */
@@ -37,11 +43,19 @@ export function FittingRoom({
   onRemove,
   onClear,
   onOpen,
+  editor,
+  appearance,
+  onAppearance,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<Stage | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
+  const [panel, setPanel] = useState<'worn' | 'editor'>(() =>
+    new URLSearchParams(location.search).get('panel') === 'editor' ? 'editor' : 'worn',
+  );
+  const appearanceRef = useRef(appearance);
+  appearanceRef.current = appearance;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -77,7 +91,9 @@ export function FittingRoom({
       ([cls, sex]) => cls === persona.classIndex && sex === persona.sex,
     );
     const face = ownHead ? undefined : persona.sex === 0 ? catalog.heads.male : catalog.heads.female;
-    const outfit: Outfit = { body, sex: persona.sex, beast: persona.classIndex === 0, face };
+    const head = editor && face ? headFor(editor, persona.sex) : null;
+    const hairFile = head && appearance.hair !== undefined ? head.hair[appearance.hair]?.file : undefined;
+    const outfit: Outfit = { body, sex: persona.sex, beast: persona.classIndex === 0, face, hairFile };
     const unavailable: string[] = [];
     for (const { part, item } of worn) {
       const def = modelFor(catalog, item, persona);
@@ -90,6 +106,7 @@ export function FittingRoom({
       .show(outfit)
       .then((report) => {
         if (cancelled) return;
+        if (editor && head) void stage.applyAppearance({ data: editor, head, look: appearanceRef.current });
         const missing = report.missing.map((part) => PART_LABEL[part].toLowerCase());
         const parts = [
           unavailable.length ? `Не подходит персонажу: ${unavailable.join(', ')}.` : '',
@@ -106,7 +123,25 @@ export function FittingRoom({
     return () => {
       cancelled = true;
     };
-  }, [catalog, persona, worn]);
+  }, [catalog, persona, worn, editor, appearance.hair]);
+
+  // colours, styles and sliders change the character in place, without rebuilding the scene
+  useEffect(() => {
+    const stage = stageRef.current;
+    const hasHead = !catalog.heads.noHead.some(
+      ([cls, sex]) => cls === persona.classIndex && sex === persona.sex,
+    );
+    if (!stage || !editor || !hasHead) return;
+    void stage.applyAppearance({ data: editor, head: headFor(editor, persona.sex), look: appearance });
+  }, [catalog, persona, editor, appearance]);
+
+  const openPanel = (next: 'worn' | 'editor') => {
+    setPanel(next);
+    stageRef.current?.focus(next === 'editor' ? 'face' : 'full');
+  };
+  const ownHead = catalog.heads.noHead.some(
+    ([cls, sex]) => cls === persona.classIndex && sex === persona.sex,
+  );
 
   const lift = useCallback((speed: number) => stageRef.current?.setLift(speed), []);
   const zoom = useCallback((speed: number) => stageRef.current?.setZoom(speed), []);
@@ -157,7 +192,44 @@ export function FittingRoom({
         {note && !busy && <div className="room__alert">{note}</div>}
         <ViewControls onLift={lift} onZoom={zoom} onReset={reset} />
       </div>
-      <div className="room__worn">
+      <div className="room__tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={panel === 'worn'}
+          className={panel === 'worn' ? 'is-on' : ''}
+          onClick={() => openPanel('worn')}
+        >
+          Надето{worn.length ? ` · ${worn.length}` : ''}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={panel === 'editor'}
+          className={panel === 'editor' ? 'is-on' : ''}
+          onClick={() => openPanel('editor')}
+        >
+          Внешность
+        </button>
+      </div>
+      {panel === 'editor' &&
+        (ownHead ? (
+          <p className="muted">
+            У этого персонажа звериная голова — редактор лица для него в игре другой и пока не перенесён.
+          </p>
+        ) : editor ? (
+          <Editor
+            data={editor}
+            head={headFor(editor, persona.sex)}
+            professionId={catalog.classes[persona.classIndex].id}
+            sex={persona.sex}
+            look={appearance}
+            onChange={onAppearance}
+          />
+        ) : (
+          <p className="muted">Загружаем редактор…</p>
+        ))}
+      <div className="room__worn" hidden={panel !== 'worn'}>
         <div className="room__worn-head">
           <span>Надето</span>
           {worn.length > 0 && (

@@ -1,5 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { EMPTY_FILTERS, applyFilters, canWear, iconUrl, loadCatalog, type Filters } from './catalog';
+import { EMPTY_APPEARANCE, fromPreset, loadEditor, type Appearance, type EditorData } from './appearance';
 import { Card } from './components/Card';
 import { Details } from './components/Details';
 import { FilterBar } from './components/FilterBar';
@@ -12,6 +13,7 @@ const STORE_KEY = 'pw-skins:v1';
 interface Saved {
   persona: Persona;
   look: Look;
+  appearance?: Appearance;
 }
 
 const PARTS: Part[] = ['outfit', 'head', 'weapon', 'back', 'shoulder', 'mount', 'flight'];
@@ -47,6 +49,8 @@ export function App() {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [persona, setPersona] = useState<Persona>(() => restore().persona);
   const [look, setLook] = useState<Look>(() => restore().look);
+  const [appearance, setAppearance] = useState<Appearance>(() => restore().appearance ?? EMPTY_APPEARANCE);
+  const [editor, setEditor] = useState<EditorData | null>(null);
   const [opened, setOpened] = useState<Item | null>(null);
   const [shown, setShown] = useState(PAGE);
   // a shared look opens straight in the fitting room on small screens
@@ -60,7 +64,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(STORE_KEY, JSON.stringify({ persona, look } satisfies Saved));
+    localStorage.setItem(STORE_KEY, JSON.stringify({ persona, look, appearance } satisfies Saved));
     const worn = Object.entries(look).map(([part, id]) => `${part}:${id}`);
     const params = new URLSearchParams(location.search);
     params.set('cls', String(persona.classIndex));
@@ -68,7 +72,29 @@ export function App() {
     if (worn.length) params.set('look', worn.join(','));
     else params.delete('look');
     history.replaceState(null, '', `?${params.toString().replace(/%3A/g, ':').replace(/%2C/g, ',')}`);
-  }, [persona, look]);
+  }, [persona, look, appearance]);
+
+  useEffect(() => {
+    loadEditor().then(
+      (data) => {
+        setEditor(data);
+        // a link may name a game preset: ?preset=<id>
+        const wanted = Number(new URLSearchParams(location.search).get('preset'));
+        const preset = wanted ? data.presets.find((entry) => entry.id === wanted) : undefined;
+        if (preset)
+          setAppearance(fromPreset(data, preset.sex === 0 ? data.heads.male : data.heads.female, preset));
+      },
+      () => setEditor(null),
+    );
+  }, []);
+
+  // the faces of the two sexes are different models: choices of one do not carry over
+  const changePersona = useCallback((next: Persona) => {
+    setPersona((current) => {
+      if (current.sex !== next.sex) setAppearance(EMPTY_APPEARANCE);
+      return next;
+    });
+  }, []);
 
   const itemsById = useMemo(() => new Map((catalog?.items ?? []).map((item) => [item.id, item])), [catalog]);
   const deferred = useDeferredValue(filters);
@@ -183,10 +209,13 @@ export function App() {
           itemsById={itemsById}
           persona={persona}
           look={look}
-          onPersona={setPersona}
+          onPersona={changePersona}
           onRemove={remove}
           onClear={() => setLook({})}
           onOpen={setOpened}
+          editor={editor}
+          appearance={appearance}
+          onAppearance={setAppearance}
         />
       </main>
 
