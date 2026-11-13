@@ -579,11 +579,7 @@ export class Stage {
     for (const mixer of this.mixers) mixer.update(delta);
     this.alignRider();
     this.steer(delta);
-    if (this.emitters.length) {
-      const pixels =
-        this.renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)));
-      for (const emitter of this.emitters) emitter.update(delta, pixels);
-    }
+    for (const emitter of this.emitters) emitter.update(delta);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };

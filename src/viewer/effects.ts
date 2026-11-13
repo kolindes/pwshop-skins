@@ -17,12 +17,18 @@ interface ParticleSpec {
   world: boolean;
   shape: { type: number; radius: number; angle: number; scale: [number, number, number] };
   texture: number;
+  /** texture whose brightness shapes the sprite */
+  mask?: number;
   blend: 'add' | 'alpha';
   tint: [number, number, number, number];
   sizeOverLife?: number[] | null;
   colorOverLife?: [number, number, number, number][] | null;
   tiles?: [number, number];
   velocity?: [number, number, number];
+  /** 0 facing the camera, 1 stretched along the velocity, 2 lying flat, 3 upright */
+  mode?: number;
+  /** length scale and speed scale of the stretched mode */
+  stretch?: [number, number];
 }
 
 interface EffectMaterial {
@@ -40,51 +46,17 @@ interface EffectMaterial {
 
 /** Anything the stage advances every frame and frees with the composition. */
 export interface Animated {
-  update(delta: number, pixels: number): void;
+  update(delta: number): void;
   dispose(): void;
-}
-
-/** Moves a texture across its surface, as the flowing effect shader of the game does. */
-class Scroller implements Animated {
-  constructor(
-    private readonly map: THREE.Texture,
-    private readonly speed: [number, number],
-  ) {}
-
-  update(delta: number): void {
-    this.map.offset.x = (this.map.offset.x + this.speed[0] * delta) % 1;
-    this.map.offset.y = (this.map.offset.y + this.speed[1] * delta) % 1;
-  }
-
-  dispose(): void {
-    this.map.dispose();
-  }
-}
-
-let rimTexture: THREE.Texture | null = null;
-
-/** Matcap that is dark in the middle and bright at the edge: the look of a rim-light shell. */
-function rimMatcap(): THREE.Texture {
-  if (rimTexture) return rimTexture;
-  const size = 128;
-  const data = new Uint8Array(size * size * 4);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const r = Math.min(1, Math.hypot(x - size / 2, y - size / 2) / (size / 2));
-      const v = Math.round(255 * Math.pow(r, 3));
-      data.set([v, v, v, 255], (y * size + x) * 4);
-    }
-  }
-  rimTexture = new THREE.DataTexture(data, size, size);
-  rimTexture.colorSpace = THREE.SRGBColorSpace;
-  rimTexture.needsUpdate = true;
-  return rimTexture;
 }
 
 const MAX_PARTICLES_PER_SYSTEM = 160;
 const SHAPE_SPHERE = 0;
 const SHAPE_CONE = 4;
 const SHAPE_BOX = 5;
+/** The game stores effect colours with headroom for bloom; without bloom they are shown within this range. */
+const GLOW_CEILING = 1.15;
+const GLOW_GAIN = 0.75;
 
 const rand = (range: [number, number]): number => range[0] + Math.random() * (range[1] - range[0]);
 
@@ -95,55 +67,87 @@ function sample(curve: number[], t: number): number {
   return curve[i] + (curve[next] - curve[i]) * (x - i);
 }
 
+/** Keeps the hue of an HDR colour and brings its brightness into what the display can show. */
+function displayTint(tint: number[], additive: boolean): [number, number, number] {
+  const peak = Math.max(tint[0], tint[1], tint[2], 1e-3);
+  const gain = (Math.min(peak, GLOW_CEILING) / peak) * (additive ? GLOW_GAIN : 1);
+  return [tint[0] * gain, tint[1] * gain, tint[2] * gain];
+}
+
 const VERTEX = /* glsl */ `
-  attribute float aSize;
-  attribute float aAngle;
-  attribute float aFrame;
-  attribute vec4 aColor;
-  uniform float uPixels;
+  attribute vec3 iPosition;
+  attribute vec3 iVelocity;
+  attribute float iSize;
+  attribute float iAngle;
+  attribute float iFrame;
+  attribute vec4 iColor;
+  uniform int uMode;
+  uniform vec2 uStretch;
   varying vec4 vColor;
-  varying float vAngle;
+  varying vec2 vUv;
   varying float vFrame;
   void main() {
-    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    float c = cos(iAngle);
+    float s = sin(iAngle);
+    vec2 corner = vec2(c * position.x - s * position.y, s * position.x + c * position.y) * iSize;
+    vec4 centre = modelViewMatrix * vec4(iPosition, 1.0);
+    vec4 mv;
+    if (uMode == 2) {
+      // lying flat: a ring or a puddle on the ground
+      mv = modelViewMatrix * vec4(iPosition + vec3(corner.x, 0.0, corner.y), 1.0);
+    } else if (uMode == 3) {
+      // upright: turns to the camera around the vertical axis only
+      mv = modelViewMatrix * vec4(iPosition + vec3(0.0, corner.y, 0.0), 1.0) + vec4(corner.x, 0.0, 0.0, 0.0);
+    } else if (uMode == 1) {
+      // a streak along its direction of travel
+      vec3 travel = (modelViewMatrix * vec4(iVelocity, 0.0)).xyz;
+      float speed = length(travel);
+      vec2 along = speed > 1e-5 ? travel.xy / max(length(travel.xy), 1e-5) : vec2(0.0, 1.0);
+      vec2 across = vec2(-along.y, along.x);
+      float reach = iSize * max(uStretch.x, 1.0) + speed * uStretch.y;
+      mv = centre + vec4(along * position.y * reach + across * position.x * iSize, 0.0, 0.0);
+    } else {
+      mv = centre + vec4(corner, 0.0, 0.0);
+    }
     gl_Position = projectionMatrix * mv;
-    gl_PointSize = clamp(aSize * uPixels / max(-mv.z, 0.01), 0.0, 512.0);
-    vColor = aColor;
-    vAngle = aAngle;
-    vFrame = aFrame;
+    vColor = iColor;
+    vUv = uv;
+    vFrame = iFrame;
   }
 `;
 
 const FRAGMENT = /* glsl */ `
   uniform sampler2D uMap;
+  uniform sampler2D uMask;
+  uniform float uHasMask;
   uniform vec2 uTiles;
   uniform float uAdditive;
   varying vec4 vColor;
-  varying float vAngle;
+  varying vec2 vUv;
   varying float vFrame;
   void main() {
-    vec2 p = gl_PointCoord - 0.5;
-    float c = cos(vAngle);
-    float s = sin(vAngle);
-    vec2 uv = vec2(c * p.x - s * p.y, s * p.x + c * p.y) + 0.5;
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
     float frame = floor(vFrame);
     vec2 cell = vec2(mod(frame, uTiles.x), floor(frame / uTiles.x));
-    uv = (vec2(uv.x, 1.0 - uv.y) + vec2(cell.x, uTiles.y - 1.0 - cell.y)) / uTiles;
+    vec2 uv = (vUv + vec2(cell.x, uTiles.y - 1.0 - cell.y)) / uTiles;
     vec4 texel = texture2D(uMap, uv);
-    // a texture without an alpha channel carries its shape in brightness
-    if (texel.a > 0.995) texel.a = max(texel.r, max(texel.g, texel.b));
-    vec4 colour = texel * vColor;
-    // additive effect textures usually carry their shape in the colour, not in alpha
-    float alpha = mix(colour.a, max(colour.a, max(colour.r, max(colour.g, colour.b))) * vColor.a, uAdditive);
-    gl_FragColor = vec4(colour.rgb * mix(1.0, alpha, uAdditive), alpha);
+    float shape = uHasMask > 0.5 ? texture2D(uMask, vUv).g : 1.0;
+    float brightness = max(texel.r, max(texel.g, texel.b));
+    // Alpha is the shape of a sprite. A glow is added as colour times alpha, so one drawn on black with a
+    // solid alpha still fades out; a blended sprite without alpha takes its shape from brightness.
+    float coverage = uAdditive > 0.5 ? texel.a : (texel.a > 0.995 ? brightness : texel.a);
+    // soft edge so that a texture reaching its border never shows the quad
+    vec2 fromCentre = vUv - 0.5;
+    float edge = 1.0 - smoothstep(0.42, 0.5, max(abs(fromCentre.x), abs(fromCentre.y)));
+    float alpha = coverage * shape * edge * vColor.a;
+    if (alpha < 0.004) discard;
+    gl_FragColor = vec4(texel.rgb * vColor.rgb * (uAdditive > 0.5 ? alpha : 1.0), alpha);
     #include <colorspace_fragment>
   }
 `;
 
-/** Replays one exported particle system as camera-facing sprites in the space of its node. */
+/** Replays one exported particle system as quads placed the way its render mode asks. */
 export class Emitter implements Animated {
-  readonly points: THREE.Points;
+  readonly mesh: THREE.Mesh;
   private readonly count: number;
   private readonly position: Float32Array;
   private readonly velocity: Float32Array;
@@ -154,7 +158,9 @@ export class Emitter implements Animated {
   private readonly angle: Float32Array;
   private readonly frame: Float32Array;
   private readonly colour: Float32Array;
+  private readonly tint: [number, number, number];
   private readonly material: THREE.ShaderMaterial;
+  private readonly geometry: THREE.InstancedBufferGeometry;
   private debt = 0;
   private clock = 0;
   private burstDone = false;
@@ -162,6 +168,7 @@ export class Emitter implements Animated {
   constructor(
     private readonly spec: ParticleSpec,
     map: THREE.Texture,
+    mask: THREE.Texture | null,
   ) {
     this.count = Math.max(1, Math.min(spec.max, MAX_PARTICLES_PER_SYSTEM));
     const n = this.count;
@@ -174,37 +181,49 @@ export class Emitter implements Animated {
     this.angle = new Float32Array(n);
     this.frame = new Float32Array(n);
     this.colour = new Float32Array(n * 4);
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(this.position, 3));
-    geometry.setAttribute('aSize', new THREE.BufferAttribute(this.size, 1));
-    geometry.setAttribute('aAngle', new THREE.BufferAttribute(this.angle, 1));
-    geometry.setAttribute('aFrame', new THREE.BufferAttribute(this.frame, 1));
-    geometry.setAttribute('aColor', new THREE.BufferAttribute(this.colour, 4));
     const additive = spec.blend === 'add';
+    this.tint = displayTint(spec.tint, additive);
+    const quad = new THREE.PlaneGeometry(1, 1);
+    this.geometry = new THREE.InstancedBufferGeometry();
+    this.geometry.index = quad.index;
+    this.geometry.setAttribute('position', quad.getAttribute('position'));
+    this.geometry.setAttribute('uv', quad.getAttribute('uv'));
+    this.geometry.instanceCount = n;
+    const instanced = (array: Float32Array, size: number) =>
+      new THREE.InstancedBufferAttribute(array, size).setUsage(THREE.DynamicDrawUsage);
+    this.geometry.setAttribute('iPosition', instanced(this.position, 3));
+    this.geometry.setAttribute('iVelocity', instanced(this.velocity, 3));
+    this.geometry.setAttribute('iSize', instanced(this.size, 1));
+    this.geometry.setAttribute('iAngle', instanced(this.angle, 1));
+    this.geometry.setAttribute('iFrame', instanced(this.frame, 1));
+    this.geometry.setAttribute('iColor', instanced(this.colour, 4));
     this.material = new THREE.ShaderMaterial({
       vertexShader: VERTEX,
       fragmentShader: FRAGMENT,
       uniforms: {
         uMap: { value: map },
-        uPixels: { value: 600 },
+        uMask: { value: mask ?? map },
+        uHasMask: { value: mask ? 1 : 0 },
         uTiles: { value: new THREE.Vector2(spec.tiles?.[0] ?? 1, spec.tiles?.[1] ?? 1) },
         uAdditive: { value: additive ? 1 : 0 },
+        uMode: { value: spec.mode ?? 0 },
+        uStretch: { value: new THREE.Vector2(spec.stretch?.[0] ?? 2, spec.stretch?.[1] ?? 0) },
       },
       transparent: true,
       depthWrite: false,
+      side: THREE.DoubleSide,
       blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending,
-      premultipliedAlpha: false,
     });
-    this.points = new THREE.Points(geometry, this.material);
-    this.points.frustumCulled = false;
-    this.points.renderOrder = 10;
-    this.points.userData.outOfFrame = true;
+    this.mesh = new THREE.Mesh(this.geometry, this.material);
+    this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = 10;
+    this.mesh.userData.outOfFrame = true;
     // start as if the effect had been running for a while
-    for (let i = 0; i < 40; i++) this.update(0.1, 600);
+    for (let i = 0; i < 40; i++) this.update(0.1);
   }
 
   dispose(): void {
-    this.points.geometry.dispose();
+    this.geometry.dispose();
     this.material.dispose();
   }
 
@@ -243,9 +262,8 @@ export class Emitter implements Animated {
     this.angle[index] = rand(this.spec.rotation);
   }
 
-  update(delta: number, pixels: number): void {
+  update(delta: number): void {
     const { spec } = this;
-    this.material.uniforms.uPixels.value = pixels;
     this.clock += delta;
     this.debt += spec.rate * delta;
     if (!this.burstDone && spec.bursts.length) {
@@ -283,23 +301,66 @@ export class Emitter implements Animated {
       const f = over ? t * (over.length - 1) - k : 0;
       for (let c = 0; c < 4; c++) {
         const life = over ? over[k][c] + (over[k + 1][c] - over[k][c]) * f : 1;
-        this.colour[i * 4 + c] =
-          spec.color[c] * spec.tint[c] * life * (c === 3 && !over ? Math.sin(Math.PI * t) : 1);
+        // without a colour curve a particle fades in and out instead of popping
+        const fade = c === 3 && !over ? Math.sin(Math.PI * t) : 1;
+        const tint = c === 3 ? Math.min(spec.tint[3], 1) : this.tint[c];
+        this.colour[i * 4 + c] = Math.min(spec.color[c], 1) * tint * life * fade;
       }
     }
     this.debt = Math.min(this.debt, this.count);
-    for (const name of ['position', 'aSize', 'aAngle', 'aFrame', 'aColor']) {
-      this.points.geometry.getAttribute(name).needsUpdate = true;
+    for (const name of ['iPosition', 'iVelocity', 'iSize', 'iAngle', 'iFrame', 'iColor']) {
+      this.geometry.getAttribute(name).needsUpdate = true;
     }
   }
 }
 
-/** Loads the textures the particle systems of a model refer to; they are not part of any material. */
+/** Moves a texture across its surface, as the flowing effect shader of the game does. */
+class Scroller implements Animated {
+  constructor(
+    private readonly map: THREE.Texture,
+    private readonly speed: [number, number],
+  ) {}
+
+  update(delta: number): void {
+    this.map.offset.x = (this.map.offset.x + this.speed[0] * delta) % 1;
+    this.map.offset.y = (this.map.offset.y + this.speed[1] * delta) % 1;
+  }
+
+  dispose(): void {
+    this.map.dispose();
+  }
+}
+
+let rimTexture: THREE.Texture | null = null;
+
+/** Matcap that is dark in the middle and bright at the edge: the look of a rim-light shell. */
+function rimMatcap(): THREE.Texture {
+  if (rimTexture) return rimTexture;
+  const size = 128;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const r = Math.min(1, Math.hypot(x - size / 2, y - size / 2) / (size / 2));
+      const v = Math.round(255 * Math.pow(r, 4));
+      data.set([v, v, v, 255], (y * size + x) * 4);
+    }
+  }
+  rimTexture = new THREE.DataTexture(data, size, size);
+  rimTexture.colorSpace = THREE.SRGBColorSpace;
+  rimTexture.needsUpdate = true;
+  return rimTexture;
+}
+
+/** Loads the textures effects refer to outside of any standard material: particle sprites and masks. */
 export async function loadEffectTextures(gltf: GLTF): Promise<void> {
   const nodes = (gltf.parser.json.nodes ?? []) as { extras?: { particles?: ParticleSpec } }[];
-  const wanted = new Set(
-    nodes.flatMap((node) => (node.extras?.particles ? [node.extras.particles.texture] : [])),
-  );
+  const wanted = new Set<number>();
+  for (const node of nodes) {
+    const spec = node.extras?.particles;
+    if (!spec) continue;
+    wanted.add(spec.texture);
+    if (typeof spec.mask === 'number') wanted.add(spec.mask);
+  }
   const materials = (gltf.parser.json.materials ?? []) as { extras?: { effect?: EffectMaterial } }[];
   for (const material of materials) {
     const mask = material.extras?.effect?.mask;
@@ -321,7 +382,7 @@ export async function loadEffectTextures(gltf: GLTF): Promise<void> {
 /** Turns exported effect materials into unlit blended ones and starts the particle systems of a model instance. */
 export function attachEffects(root: THREE.Object3D, gltf: GLTF, enabled: boolean): Animated[] {
   const textures = (gltf.userData.effectTextures ?? {}) as Record<number, THREE.Texture>;
-  const emitters: Animated[] = [];
+  const animated: Animated[] = [];
   const hosts: THREE.Object3D[] = [];
   root.traverse((node) => {
     if (node.userData.particles) hosts.push(node);
@@ -338,11 +399,12 @@ export function attachEffects(root: THREE.Object3D, gltf: GLTF, enabled: boolean
       mesh.userData.outOfFrame = true;
       mesh.renderOrder = 9;
       if (effect.rim) {
-        const [r, g, b] = effect.rim.color;
+        const [r, g, b] = displayTint(effect.rim.color, true);
         return new THREE.MeshMatcapMaterial({
           matcap: rimMatcap(),
-          color: new THREE.Color(Math.min(r, 1.5), Math.min(g, 1.5), Math.min(b, 1.5)),
+          color: new THREE.Color(r, g, b),
           transparent: true,
+          opacity: 0.8,
           depthWrite: false,
           blending: THREE.AdditiveBlending,
           side: THREE.FrontSide,
@@ -359,15 +421,16 @@ export function attachEffects(root: THREE.Object3D, gltf: GLTF, enabled: boolean
       }
       if (map && effect.scroll) {
         map.wrapS = map.wrapT = THREE.RepeatWrapping;
-        emitters.push(new Scroller(map, effect.scroll));
+        animated.push(new Scroller(map, effect.scroll));
       }
-      // HDR tints keep their hue; brightness beyond the display range is cut
-      const peak = Math.max(tint[0], tint[1], tint[2], 1e-3);
-      const gain = Math.min(peak, 2.5) / peak;
+      const mask = typeof effect.mask === 'number' ? (textures[effect.mask] ?? null) : null;
+      const [r, g, b] = displayTint(tint, additive);
       return new THREE.MeshBasicMaterial({
         map,
-        alphaMap: typeof effect.mask === 'number' ? (textures[effect.mask] ?? null) : null,
-        color: new THREE.Color(tint[0] * gain, tint[1] * gain, tint[2] * gain),
+        // a blended surface without a mask takes its coverage from the brightness of its own texture,
+        // otherwise a texture without alpha shows as a solid panel
+        alphaMap: mask ?? (additive ? null : map),
+        color: new THREE.Color(r, g, b),
         opacity: Math.min(tint[3], 1),
         transparent: true,
         depthWrite: false,
@@ -377,14 +440,15 @@ export function attachEffects(root: THREE.Object3D, gltf: GLTF, enabled: boolean
     });
     mesh.material = Array.isArray(mesh.material) ? next : next[0];
   });
-  if (!enabled) return emitters;
+  if (!enabled) return animated;
   for (const host of hosts) {
     const spec = host.userData.particles as ParticleSpec;
     const map = textures[spec.texture];
     if (!map) continue;
-    const emitter = new Emitter(spec, map);
-    host.add(emitter.points);
-    emitters.push(emitter);
+    const mask = typeof spec.mask === 'number' ? (textures[spec.mask] ?? null) : null;
+    const emitter = new Emitter(spec, map, mask);
+    host.add(emitter.mesh);
+    animated.push(emitter);
   }
-  return emitters;
+  return animated;
 }
