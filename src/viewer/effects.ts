@@ -29,6 +29,8 @@ interface ParticleSpec {
   mode?: number;
   /** length scale and speed scale of the stretched mode */
   stretch?: [number, number];
+  /** 0 faces the view, 1 world axes, 2 the plane of its own node */
+  align?: number;
 }
 
 interface EffectMaterial {
@@ -108,6 +110,12 @@ const VERTEX = /* glsl */ `
       vec2 across = vec2(-along.y, along.x);
       float reach = size * max(uStretch.x, 1.0) + speed * uStretch.y;
       mv = centre + vec4(along * position.y * reach + across * position.x * size, 0.0, 0.0);
+    } else if (uMode == 4) {
+      // in the plane of its own node: a ripple or a ring laid out by the artist
+      mv = modelViewMatrix * vec4(iPosition + vec3(corner, 0.0) / uScale, 1.0);
+    } else if (uMode == 5) {
+      // fixed to the world axes
+      mv = centre + viewMatrix * vec4(corner, 0.0, 0.0);
     } else {
       mv = centre + vec4(corner, 0.0, 0.0);
     }
@@ -146,6 +154,18 @@ const FRAGMENT = /* glsl */ `
     #include <colorspace_fragment>
   }
 `;
+
+/**
+ * How the quads of a system are oriented. A system aligned to its own node lies in that node's plane; this also
+ * holds for a "stretched" system that barely moves, which the game uses for ripples spreading on the ground.
+ */
+function renderMode(spec: ParticleSpec): number {
+  const mode = spec.mode ?? 0;
+  const still = Math.max(Math.abs(spec.speed[0]), Math.abs(spec.speed[1])) < 0.02 && !spec.velocity;
+  if (spec.align === 2 && (mode === 0 || (mode === 1 && still))) return 4;
+  if (spec.align === 1 && mode === 0) return 5;
+  return mode;
+}
 
 /** Replays one exported particle system as quads placed the way its render mode asks. */
 export class Emitter implements Animated {
@@ -208,7 +228,7 @@ export class Emitter implements Animated {
         uHasMask: { value: mask ? 1 : 0 },
         uTiles: { value: new THREE.Vector2(spec.tiles?.[0] ?? 1, spec.tiles?.[1] ?? 1) },
         uAdditive: { value: additive ? 1 : 0 },
-        uMode: { value: spec.mode ?? 0 },
+        uMode: { value: renderMode(spec) },
         uStretch: { value: new THREE.Vector2(spec.stretch?.[0] ?? 2, spec.stretch?.[1] ?? 0) },
         uScale: { value: 1 },
       },
