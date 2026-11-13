@@ -4,6 +4,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { DATA_URL } from '../catalog';
+import { attachEffects, loadEffectTextures, type Emitter } from './effects';
 import type { Catalog, ModelDef, Part } from '../types';
 
 /** Resolved models of one composition; a missing key means the slot is empty. */
@@ -14,6 +15,12 @@ export type Outfit = Partial<Record<Part, ModelDef>> & {
   /** head and default hair files of the persona; absent when the body has its own head */
   face?: { head: string; hair: string };
 };
+
+interface Rider {
+  body: THREE.Object3D;
+  seat: THREE.Object3D;
+  carrier: THREE.Object3D;
+}
 
 export interface StageReport {
   missing: Part[];
@@ -94,6 +101,10 @@ export class Stage {
   private readonly clock = new THREE.Clock();
   private readonly holder = new THREE.Group();
   private mixers: THREE.AnimationMixer[] = [];
+  private emitters: Emitter[] = [];
+  private rider: Rider | null = null;
+  /** particle and glow effects; off for visitors who ask for reduced motion */
+  private readonly effects = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   private generation = 0;
   private frame = 0;
   private disposed = false;
@@ -208,14 +219,16 @@ export class Stage {
 
     step('attached');
     const carrier = flight ?? mount;
+    let rider: Rider | null = null;
     let riderClip = 'Stand';
     if (carrier) {
       const bindPath = Array.isArray(carrier.def.bind) ? carrier.def.bind[outfit.sex] : carrier.def.bind;
       const seat =
         carrier.scene.getObjectByName(nodeName(lastSegment(bindPath ?? 'Ride_Point'))) ?? carrier.scene;
       seat.add(body.scene);
-      // bind points keep the modelling tool's axes (X forward): turn the rider to face along the carrier
-      body.scene.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+      // bind points keep the axes of the modelling tool, different from carrier to carrier:
+      // the rider follows the seat position and stays upright along the carrier itself
+      rider = { body: body.scene, seat, carrier: carrier.scene };
       carrier.scene.updateMatrixWorld(true);
       const ws = seat.getWorldScale(new THREE.Vector3());
       const wq = seat.getWorldQuaternion(new THREE.Quaternion());
@@ -245,6 +258,14 @@ export class Stage {
     this.holder.clear();
     this.holder.add(group);
     this.mixers = mixers;
+    this.rider = rider;
+    this.alignRider();
+    for (const emitter of this.emitters) emitter.dispose();
+    const emitters: Emitter[] = [];
+    group.traverse((node) => {
+      if (node.userData.emitters) emitters.push(...(node.userData.emitters as Emitter[]));
+    });
+    this.emitters = emitters;
     this.fit(carrier ? `carrier:${carrier.def.res}` : 'body');
     return { missing };
   }
@@ -259,6 +280,7 @@ export class Stage {
       hideInactive(scene);
       dropVertexColors(scene);
       tintHair(scene);
+      scene.userData.emitters = attachEffects(scene, gltf, this.effects);
       return { scene, animations: gltf.animations };
     } catch (error) {
       console.warn('model failed', def.file, error);
@@ -270,7 +292,10 @@ export class Stage {
   private load(url: string): Promise<GLTF> {
     let pending = this.cache.get(url);
     if (!pending) {
-      pending = this.loader.loadAsync(url);
+      pending = this.loader.loadAsync(url).then(async (gltf) => {
+        await loadEffectTextures(gltf);
+        return gltf;
+      });
       pending.catch(() => this.cache.delete(url));
       this.cache.set(url, pending);
       if (this.cache.size > 60) this.cache.delete(this.cache.keys().next().value as string);
@@ -405,11 +430,26 @@ export class Stage {
     this.controls.update();
   }
 
+  private alignRider(): void {
+    if (!this.rider) return;
+    const { body, seat, carrier } = this.rider;
+    carrier.updateWorldMatrix(true, true);
+    const seatWorld = seat.getWorldQuaternion(new THREE.Quaternion());
+    const carrierWorld = carrier.getWorldQuaternion(new THREE.Quaternion());
+    body.quaternion.copy(seatWorld.invert().multiply(carrierWorld));
+  }
+
   private loop = (): void => {
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.loop);
     const delta = Math.min(this.clock.getDelta(), 0.1);
     for (const mixer of this.mixers) mixer.update(delta);
+    this.alignRider();
+    if (this.emitters.length) {
+      const pixels =
+        this.renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)));
+      for (const emitter of this.emitters) emitter.update(delta, pixels);
+    }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };
