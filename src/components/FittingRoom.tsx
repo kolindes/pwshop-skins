@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { PART_LABEL, PART_ORDER, displayName, iconUrl, slotOf } from '../catalog';
 import type { Catalog, Item, Look, ModelDef, Part, Persona } from '../types';
 import { Stage, type Outfit } from '../viewer/Stage';
+import { ViewControls } from './ViewControls';
 
 interface Props {
   catalog: Catalog;
@@ -107,6 +108,9 @@ export function FittingRoom({
     };
   }, [catalog, persona, worn]);
 
+  const lift = useCallback((speed: number) => stageRef.current?.setLift(speed), []);
+  const zoom = useCallback((speed: number) => stageRef.current?.setZoom(speed), []);
+  const reset = useCallback(() => stageRef.current?.resetView(), []);
   const current = catalog.classes[persona.classIndex];
   return (
     <aside className="room">
@@ -151,14 +155,7 @@ export function FittingRoom({
           </div>
         )}
         {note && !busy && <div className="room__alert">{note}</div>}
-        <button
-          type="button"
-          className="room__reset"
-          onClick={() => stageRef.current?.resetView()}
-          title="Вернуть вид"
-        >
-          ⟲
-        </button>
+        <ViewControls onLift={lift} onZoom={zoom} onReset={reset} />
       </div>
       <div className="room__worn">
         <div className="room__worn-head">

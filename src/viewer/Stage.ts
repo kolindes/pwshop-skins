@@ -109,6 +109,10 @@ export class Stage {
   private frame = 0;
   private disposed = false;
   private framedFor = '';
+  private liftSpeed = 0;
+  private zoomSpeed = 0;
+  /** vertical range the view may slide over and the height of the framed figure */
+  private span = { low: 0, high: 2, height: 2 };
   /** load and composition problems of the last show(), for diagnostics */
   readonly problems: string[] = [];
 
@@ -155,6 +159,36 @@ export class Stage {
     cancelAnimationFrame(this.frame);
     this.controls.dispose();
     this.renderer.dispose();
+  }
+
+  /** Slides the view up (positive) or down while the speed is set; -1 .. 1. */
+  setLift(speed: number): void {
+    this.liftSpeed = Math.max(-1, Math.min(1, speed));
+  }
+
+  /** Moves the camera closer (positive) or away while the speed is set; -1 .. 1. */
+  setZoom(speed: number): void {
+    this.zoomSpeed = Math.max(-1, Math.min(1, speed));
+  }
+
+  private steer(delta: number): void {
+    if (this.liftSpeed) {
+      const from = this.controls.target.y;
+      const to = Math.max(
+        this.span.low,
+        Math.min(this.span.high, from + this.liftSpeed * this.span.height * 0.6 * delta),
+      );
+      this.controls.target.y = to;
+      this.camera.position.y += to - from;
+    }
+    if (this.zoomSpeed) {
+      const offset = this.camera.position.clone().sub(this.controls.target);
+      const distance = Math.max(
+        this.controls.minDistance,
+        Math.min(this.controls.maxDistance, offset.length() * Math.exp(-this.zoomSpeed * 1.4 * delta)),
+      );
+      this.camera.position.copy(this.controls.target).add(offset.setLength(distance));
+    }
   }
 
   resetView(): void {
@@ -427,6 +461,7 @@ export class Stage {
       centre.z + distance * Math.cos(yaw),
     );
     this.controls.maxDistance = distance * 4;
+    this.span = { low: box.min.y, high: box.max.y, height: Math.max(size.y, 0.5) };
     this.controls.update();
   }
 
@@ -445,6 +480,7 @@ export class Stage {
     const delta = Math.min(this.clock.getDelta(), 0.1);
     for (const mixer of this.mixers) mixer.update(delta);
     this.alignRider();
+    this.steer(delta);
     if (this.emitters.length) {
       const pixels =
         this.renderer.domElement.height / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)));

@@ -49,7 +49,8 @@ export function App() {
   const [look, setLook] = useState<Look>(() => restore().look);
   const [opened, setOpened] = useState<Item | null>(null);
   const [shown, setShown] = useState(PAGE);
-  const [roomOpen, setRoomOpen] = useState(false);
+  // a shared look opens straight in the fitting room on small screens
+  const [roomOpen, setRoomOpen] = useState(() => /[?&](look|room)=/.test(location.search));
   const sentinel = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

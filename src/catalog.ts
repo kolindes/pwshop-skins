@@ -94,7 +94,10 @@ export const displayDesc = (item: Item): string => item.descCorrect || item.desc
 
 export function canWear(item: Item, persona: Persona): boolean {
   if (item.sex !== -1 && item.sex !== persona.sex) return false;
-  return ((item.mask >>> slotOf(persona)) & 1) === 1;
+  const slot = slotOf(persona);
+  if (((item.mask >>> slot) & 1) !== 1) return false;
+  // the mask may name a class and sex pair the game has no model for
+  return item.models.length === 0 || item.models[slot] != null;
 }
 
 /** The offer shown on a card: the permanent one when it exists, otherwise the cheapest. */
