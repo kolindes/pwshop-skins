@@ -1,13 +1,41 @@
-# PW Fashion House
+# Дом Моды ПВ
 
-Catalogue of Perfect World Ascend cosmetics with an in-browser 3D fitting room.
+Каталог обликов Perfect World Ascend с 3D-примеркой: стили, причёски, оружие, спутники, ездовые и полёты на одной странице.
 
-> Work in progress. Screenshots and deployment notes will appear with the first release candidate.
+- поиск, фильтры по типу, доступности, редкости и цене;
+- персонаж любого класса и пола, несколько вещей одновременно, анимация, вращение и приближение;
+- для каждого облика — описание, цены, способ получения и результат проверки продажи.
 
-## Branches
+## Запуск
 
-| Branch  | Purpose                      |
-| ------- | ---------------------------- |
-| `DEV`   | active development (default) |
-| `STAGE` | release candidates           |
-| `PROD`  | released, deployable         |
+Нужны Node.js 22 и pnpm 9 (через corepack).
+
+```sh
+corepack pnpm install
+corepack pnpm dev        # разработка, порт 47833
+corepack pnpm build      # сборка в dist/
+corepack pnpm preview    # готовая сборка, порт 47831
+```
+
+Каталог и модели в репозиторий не входят. Приложение читает их из каталога `assets/` (или из `PW_ASSETS_DIR`) по адресу `/data`:
+
+```
+assets/
+  catalog.json   описание обликов
+  icons/         иконки (WebP)
+  models/        модели (GLB)
+  anims/         анимации персонажей (GLB)
+```
+
+## Разработка
+
+```sh
+corepack pnpm lint
+corepack pnpm test
+```
+
+Ветки: `DEV` — разработка, `STAGE` — предрелизная проверка, `PROD` — готовая версия.
+
+## Права
+
+Неофициальный фанатский проект. Все права на игру и её материалы принадлежат правообладателям.
