@@ -1,0 +1,17 @@
+# dependencies and builds
+node_modules/
+dist/
+.vite/
+
+# extracted game assets and generated data (built locally, never committed)
+assets/
+public/assets/
+data/raw/
+data/evidence/
+
+# internal notes, environment, logs
+docs/internal/
+.env*
+*.log
+.DS_Store
+Thumbs.db
